@@ -5,9 +5,21 @@ import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import crypto from "crypto";
+import { createRequire } from "module";
 
 const CONFIG_DIR = path.join(os.homedir(), ".imgcli");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json");
+const OPENAI_MODELS = [
+  { id: "gpt-image-1", label: "gpt-image-1 (latest)" },
+  { id: "dall-e-3", label: "dall-e-3" }
+];
+const GEMINI_MODELS = [
+  { id: "gemini-3-pro-image-preview", label: "gemini-3-pro-image-preview (latest)" },
+  { id: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image" },
+  { id: "imagen-3.0-generate-001", label: "imagen-3.0-generate-001 (legacy)" }
+];
 
 async function loadConfig() {
   try {
@@ -47,6 +59,39 @@ function inferAspectRatio(size) {
   const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
   const g = gcd(w, h);
   return `${w / g}:${h / g}`;
+}
+
+function latestModel(provider) {
+  if (provider === "openai") return OPENAI_MODELS[0].id;
+  if (provider === "gemini") return GEMINI_MODELS[0].id;
+  return undefined;
+}
+
+function modelChoices(provider) {
+  if (provider === "openai") return OPENAI_MODELS.map((m) => ({ name: m.label, value: m.id }));
+  if (provider === "gemini") return GEMINI_MODELS.map((m) => ({ name: m.label, value: m.id }));
+  return [];
+}
+
+function startLoadingBox(label = "Generating") {
+  if (!process.stdout.isTTY) {
+    return () => {};
+  }
+  const frames = ["|", "/", "-", "\\"];
+  let idx = 0;
+  const interval = setInterval(() => {
+    const frame = frames[idx % frames.length];
+    idx += 1;
+    const top = "+---------+";
+    const mid = `|   ${frame}   |`;
+    const bot = "+---------+";
+    const text = `${label}...`;
+    process.stdout.write(`\r${top}\n${mid}\n${bot}  ${text}\x1b[3A`);
+  }, 120);
+  return () => {
+    clearInterval(interval);
+    process.stdout.write("\r\x1b[3B\x1b[2K");
+  };
 }
 
 async function writeOutputs(buffers, outPath, provider) {
@@ -107,8 +152,7 @@ async function openaiGenerate({ apiKey, prompt, size, n, model }) {
       model,
       prompt,
       size,
-      n,
-      response_format: "b64_json"
+      n
     })
   });
 
@@ -123,43 +167,98 @@ async function openaiGenerate({ apiKey, prompt, size, n, model }) {
     throw new Error("OpenAI API returned no images");
   }
 
-  return images.map((img) => Buffer.from(img.b64_json, "base64"));
+  const buffers = [];
+  for (const img of images) {
+    if (img.b64_json) {
+      buffers.push(Buffer.from(img.b64_json, "base64"));
+      continue;
+    }
+    if (img.url) {
+      const imageRes = await fetch(img.url);
+      if (!imageRes.ok) {
+        const text = await imageRes.text();
+        throw new Error(`Failed to fetch OpenAI image (${imageRes.status}): ${text}`);
+      }
+      const arrayBuffer = await imageRes.arrayBuffer();
+      buffers.push(Buffer.from(arrayBuffer));
+      continue;
+    }
+    throw new Error("OpenAI API returned an unsupported image format");
+  }
+
+  return buffers;
 }
 
 async function geminiGenerate({ apiKey, prompt, aspectRatio, n, model }) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      instances: [{ prompt }],
-      parameters: {
-        sampleCount: n,
-        ...(aspectRatio ? { aspectRatio } : {})
-      }
-    })
-  });
+  if (model.startsWith("imagen-")) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: {
+          sampleCount: n,
+          ...(aspectRatio ? { aspectRatio } : {})
+        }
+      })
+    });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini API error (${res.status}): ${text}`);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Gemini API error (${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    const predictions = data.predictions || [];
+    if (!predictions.length) {
+      throw new Error("Gemini API returned no images");
+    }
+
+    return predictions.map((img) => Buffer.from(img.bytesBase64Encoded, "base64"));
   }
 
-  const data = await res.json();
-  const predictions = data.predictions || [];
-  if (!predictions.length) {
-    throw new Error("Gemini API returned no images");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const buffers = [];
+  for (let i = 0; i < n; i += 1) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }]
+          }
+        ]
+      })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Gemini API error (${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const images = parts.filter((part) => part.inlineData?.data).map((part) => part.inlineData.data);
+    if (!images.length) {
+      throw new Error("Gemini API returned no images");
+    }
+    images.forEach((img) => buffers.push(Buffer.from(img, "base64")));
   }
 
-  return predictions.map((img) => Buffer.from(img.bytesBase64Encoded, "base64"));
+  return buffers;
 }
 
 const program = new Command();
 
 program
   .name("imgcli")
-  .description("Generate images with OpenAI or Gemini")
-  .version("0.1.0");
+  .description(pkg.description || "Generate images with OpenAI or Gemini")
+  .version(pkg.version);
 
 program
   .command("login")
@@ -188,7 +287,7 @@ program
     ]);
 
     const provider = options.provider || answers.provider;
-    const apiKey = answers.apiKey;
+    const apiKey = answers.apiKey.trim();
 
     ensureProvider(config, provider);
     config.providers[provider].apiKey = apiKey;
@@ -235,7 +334,7 @@ program
   .option("-n, --count <number>", "number of images", (v) => Number(v), 1)
   .option("--size <size>", "size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)")
   .option("--aspect <ratio>", "aspect ratio like 1:1, 4:3, 16:9 (Gemini)")
-  .option("--model <model>", "model override")
+  .option("--model <model>", "model override (default is latest for provider)")
   .option("--non-interactive", "fail if required inputs are missing (CI mode)")
   .action(async (options) => {
     const config = await loadConfig();
@@ -248,6 +347,7 @@ program
     const provider =
       (options.provider || answers.provider || (storedProviders.length === 1 ? storedProviders[0] : "openai"))
         .toLowerCase();
+    let model = options.model;
     const prompt = options.prompt || answers.prompt;
     const n = Number.isFinite(options.count) && options.count > 0 ? options.count : 1;
 
@@ -273,24 +373,41 @@ program
       process.exit(1);
     }
 
+    if (!model && !nonInteractive) {
+      const modelAnswer = await inquirer.prompt([
+        {
+          type: "list",
+          name: "model",
+          message: "Select a model",
+          choices: modelChoices(provider),
+          default: latestModel(provider)
+        }
+      ]);
+      model = modelAnswer.model;
+    }
+
+    model = model || latestModel(provider);
+
+    let stopLoading;
     try {
+      stopLoading = startLoadingBox();
       let buffers;
       if (provider === "openai") {
         const size = options.size || "1024x1024";
-        const model = options.model || "gpt-image-1";
         buffers = await openaiGenerate({ apiKey, prompt, size, n, model });
       } else if (provider === "gemini") {
         const aspectRatio = options.aspect || inferAspectRatio(options.size) || "1:1";
-        const model = options.model || "imagen-3.0-generate-001";
         buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model });
       } else {
         console.error("Unsupported provider. Use openai or gemini.");
         process.exit(1);
       }
 
+      stopLoading();
       const outputs = await writeOutputs(buffers, options.out, provider);
       outputs.forEach((file) => console.log(`Saved ${file}`));
     } catch (err) {
+      stopLoading?.();
       console.error(err.message || err);
       process.exit(1);
     }
@@ -304,7 +421,7 @@ program
     const storedProviders = Object.entries(config.providers || {})
       .filter(([, data]) => data && data.apiKey)
       .map(([name]) => name);
-    const preselectedProvider = storedProviders.length === 1 ? storedProviders[0] : undefined;
+    let preselectedProvider = storedProviders.length === 1 ? storedProviders[0] : undefined;
     if (storedProviders.length === 0) {
       const loginAnswers = await inquirer.prompt([
         {
@@ -325,9 +442,10 @@ program
         }
       ]);
       ensureProvider(config, loginAnswers.provider);
-      config.providers[loginAnswers.provider].apiKey = loginAnswers.apiKey;
+      config.providers[loginAnswers.provider].apiKey = loginAnswers.apiKey.trim();
       await saveConfig(config);
       storedProviders.push(loginAnswers.provider);
+      preselectedProvider = loginAnswers.provider;
     }
     const answers = await inquirer.prompt([
       {
@@ -344,6 +462,13 @@ program
         type: "input",
         name: "prompt",
         message: "Image prompt"
+      },
+      {
+        type: "list",
+        name: "model",
+        message: "Select a model",
+        choices: (answers) => modelChoices(answers.provider || preselectedProvider),
+        default: (answers) => latestModel(answers.provider || preselectedProvider)
       },
       {
         type: "number",
@@ -375,6 +500,7 @@ program
     const prompt = answers.prompt;
     const n = Number.isFinite(answers.count) && answers.count > 0 ? answers.count : 1;
     const out = answers.out;
+    const model = answers.model || latestModel(provider);
 
     const apiKey = config.providers[provider]?.apiKey;
     if (!apiKey) {
@@ -382,21 +508,23 @@ program
       process.exit(1);
     }
 
+    let stopLoading;
     try {
+      stopLoading = startLoadingBox();
       let buffers;
       if (provider === "openai") {
         const size = answers.size || "1024x1024";
-        const model = "gpt-image-1";
         buffers = await openaiGenerate({ apiKey, prompt, size, n, model });
       } else {
         const aspectRatio = answers.aspect || "1:1";
-        const model = "imagen-3.0-generate-001";
         buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model });
       }
 
+      stopLoading();
       const outputs = await writeOutputs(buffers, out, provider);
       outputs.forEach((file) => console.log(`Saved ${file}`));
     } catch (err) {
+      stopLoading?.();
       console.error(err.message || err);
       process.exit(1);
     }

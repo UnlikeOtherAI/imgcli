@@ -2,10 +2,30 @@
   "name": "imgcli",
   "version": "0.1.0",
   "description": "CLI to generate images with OpenAI or Gemini",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/UnlikeOtherAI/imgcli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/UnlikeOtherAI/imgcli/issues"
+  },
+  "homepage": "https://github.com/UnlikeOtherAI/imgcli#readme",
+  "keywords": [
+    "cli",
+    "image",
+    "image-generation",
+    "openai",
+    "gemini",
+    "ai"
+  ],
   "type": "module",
   "bin": {
     "imgcli": "bin/imgcli.js"
   },
+  "files": [
+    "bin"
+  ],
   "engines": {
     "node": ">=18"
   },

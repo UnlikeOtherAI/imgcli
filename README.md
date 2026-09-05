@@ -5,8 +5,21 @@ Generate images from the command line using OpenAI or Gemini. Includes interacti
 ## Requirements
 
 - Node.js 18+
+- An OpenAI or Gemini API key
 
 ## Install
+
+From npm (global):
+
+```bash
+npm install -g imgcli
+```
+
+Run once with npx:
+
+```bash
+npx imgcli
+```
 
 Local install for development:
 
@@ -15,10 +28,18 @@ npm install
 npm link
 ```
 
-Global install from the folder:
+## Quickstart
+
+Login (store API key):
 
 ```bash
-npm install -g .
+imgcli login
+```
+
+Generate an image:
+
+```bash
+imgcli generate --provider openai --prompt "a retro robot in watercolor" --out out
 ```
 
 ## Usage
@@ -27,12 +48,6 @@ Interactive (default):
 
 ```bash
 imgcli
-```
-
-Login (store API key):
-
-```bash
-imgcli login
 ```
 
 Logout (remove API key):
@@ -53,13 +68,51 @@ Generate (non-interactive / CI):
 imgcli generate --non-interactive --provider gemini --prompt "foggy mountain temple at dawn" --aspect 16:9 --out out
 ```
 
+Help:
+
+```bash
+imgcli --help
+```
+
+## Generate options
+
+```
+imgcli generate [options]
+
+  -p, --provider <provider>   openai or gemini
+  --prompt <prompt>           prompt for the image
+  -o, --out <path>            output directory or .png file
+  -n, --count <number>        number of images (default: 1)
+  --size <size>               size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)
+  --aspect <ratio>            aspect ratio like 1:1, 4:3, 16:9 (Gemini)
+  --model <model>             model override (default is latest for provider)
+  --non-interactive           fail if required inputs are missing (CI mode)
+```
+
+## CI / non-interactive
+
+- Requires `--provider` and `--prompt`.
+- API key must already be stored via `imgcli login`.
+
+## Models
+
+The CLI prompts you to select a model when running interactively. Defaults to the latest model for the chosen provider.
+Use `--model` to override.
+
+OpenAI:
+
+- gpt-image-1 (latest)
+- dall-e-3
+
+Gemini:
+
+- gemini-3-pro-image-preview (latest)
+- gemini-2.5-flash-image
+- imagen-3.0-generate-001 (legacy)
+
 ## Configuration
 
-API keys are stored in:
-
-```
-~/.imgcli/config.json
-```
+API keys are stored in `~/.imgcli/config.json` (plaintext).
 
 ## Notes
 
