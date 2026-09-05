@@ -110,9 +110,29 @@ Gemini:
 - gemini-2.5-flash-image
 - imagen-3.0-generate-001 (legacy)
 
+## Proxy / gateway support
+
+Gemini calls can be routed through a gateway such as Ledger instead of Google
+directly. Store the gateway token and base URL at login:
+
+```bash
+imgcli login --provider gemini --base-url https://ledger.unlikeotherai.com
+```
+
+Or override per call:
+
+```bash
+imgcli generate --provider gemini --base-url https://ledger.unlikeotherai.com \
+  --prompt "a retro robot in watercolor" --out out
+```
+
+In proxy mode the request goes to `<base-url>/v1/gemini/generateContent`, the
+model travels in the request body and the token is sent as a bearer token.
+
 ## Configuration
 
-API keys are stored in `~/.imgcli/config.json` (plaintext).
+API keys are stored in `~/.imgcli/config.json` (plaintext), alongside the
+optional `baseUrl` for each provider.
 
 ## Notes
 
