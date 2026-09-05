@@ -189,7 +189,47 @@ async function openaiGenerate({ apiKey, prompt, size, n, model }) {
   return buffers;
 }
 
-async function geminiGenerate({ apiKey, prompt, aspectRatio, n, model }) {
+// Gateways such as Ledger expose one Gemini endpoint, take the model in the
+// request body and authenticate with a bearer token rather than an API key.
+async function proxyGeminiGenerate({ apiKey, prompt, n, model, baseUrl }) {
+  const url = `${baseUrl.replace(/\/+$/, "")}/v1/gemini/generateContent`;
+  const buffers = [];
+
+  for (let i = 0; i < n; i += 1) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        contents: [{ role: "user", parts: [{ text: prompt }] }]
+      })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Proxy error (${res.status}): ${text}`);
+    }
+
+    const data = await res.json();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const images = parts.filter((part) => part.inlineData?.data).map((part) => part.inlineData.data);
+    if (!images.length) {
+      throw new Error("Proxy returned no images");
+    }
+    images.forEach((img) => buffers.push(Buffer.from(img, "base64")));
+  }
+
+  return buffers;
+}
+
+async function geminiGenerate({ apiKey, prompt, aspectRatio, n, model, baseUrl }) {
+  if (baseUrl) {
+    return proxyGeminiGenerate({ apiKey, prompt, n, model, baseUrl });
+  }
+
   if (model.startsWith("imagen-")) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
     const res = await fetch(url, {
@@ -264,6 +304,7 @@ program
   .command("login")
   .description("Store API key for a provider")
   .option("-p, --provider <provider>", "openai or gemini")
+  .option("--base-url <url>", "route Gemini calls through a proxy such as Ledger")
   .action(async (options) => {
     const config = await loadConfig();
     const answers = await inquirer.prompt([
@@ -283,14 +324,26 @@ program
         message: "API key",
         mask: "*",
         validate: (value) => (value ? true : "API key is required")
+      },
+      {
+        type: "input",
+        name: "baseUrl",
+        message: "Proxy base URL (optional, blank for the provider directly)",
+        when: (current) => !options.baseUrl && (options.provider || current.provider) === "gemini"
       }
     ]);
 
     const provider = options.provider || answers.provider;
     const apiKey = answers.apiKey.trim();
+    const baseUrl = (options.baseUrl || answers.baseUrl || "").trim();
 
     ensureProvider(config, provider);
     config.providers[provider].apiKey = apiKey;
+    if (baseUrl) {
+      config.providers[provider].baseUrl = baseUrl;
+    } else {
+      delete config.providers[provider].baseUrl;
+    }
     await saveConfig(config);
     console.log(`Saved API key for ${provider}`);
   });
@@ -335,6 +388,7 @@ program
   .option("--size <size>", "size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)")
   .option("--aspect <ratio>", "aspect ratio like 1:1, 4:3, 16:9 (Gemini)")
   .option("--model <model>", "model override (default is latest for provider)")
+  .option("--base-url <url>", "route Gemini calls through a proxy such as Ledger")
   .option("--non-interactive", "fail if required inputs are missing (CI mode)")
   .action(async (options) => {
     const config = await loadConfig();
@@ -397,7 +451,8 @@ program
         buffers = await openaiGenerate({ apiKey, prompt, size, n, model });
       } else if (provider === "gemini") {
         const aspectRatio = options.aspect || inferAspectRatio(options.size) || "1:1";
-        buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model });
+        const baseUrl = options.baseUrl || config.providers[provider]?.baseUrl;
+        buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model, baseUrl });
       } else {
         console.error("Unsupported provider. Use openai or gemini.");
         process.exit(1);
