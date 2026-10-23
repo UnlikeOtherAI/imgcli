@@ -20,6 +20,8 @@ test("current choices include snapshots and preserve custom saved preferences", 
   assert(modelChoices("gemini").some((m) => m.value === "gemini-3.1-flash-lite-image"));
   assert.equal(modelChoices("gemini", "private-image-alias")[0].value, "private-image-alias");
   assert(!modelChoices("openai").some((m) => m.value === "dall-e-3"));
+  assert(!modelChoices("openai").some((m) => m.value === "gpt-image-1"));
+  assert.equal(modelChoices("openai", "gpt-image-1")[0].value, "gpt-image-1");
 });
 
 test("encoding inference, alpha compatibility and invalid arguments fail before a request", () => {

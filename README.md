@@ -112,11 +112,13 @@ OpenAI:
 - `gpt-image-2.5-flare`
 - `gpt-image-2.5-sunburst-2026-09-08`, `gpt-image-2.5-flare-2026-09-08` (snapshots)
 - `gpt-image-2`, `gpt-image-2-2026-04-21` (snapshot)
-- `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`
-- `chatgpt-image-latest` (rolling alias)
+- `gpt-image-1.5`, `gpt-image-1-mini`, `chatgpt-image-latest` (legacy; retire 1 December 2026)
 
-DALL-E models are retired and no longer appear in the menu. Model access still
-depends on the provider account. See the [OpenAI image API reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
+DALL-E models and `gpt-image-1` (retired 23 October 2026) no longer appear in the
+menu. Explicit or saved model IDs are preserved, so an unavailable model will
+return the provider error rather than silently switching models. Model access
+depends on the provider account. See the [OpenAI image API reference](https://developers.openai.com/api/reference/resources/images/methods/generate)
+and [image prompting lifecycle notes](https://developers.openai.com/api/docs/guides/image-prompting).
 
 Gemini:
 

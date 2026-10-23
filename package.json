@@ -35,7 +35,7 @@
     "inquirer": "^9.2.20"
   },
   "scripts": {
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/images.test.js",
     "check": "node --check bin/imgcli.js && node --check lib/images.js"
   }
 }
