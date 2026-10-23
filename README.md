@@ -81,34 +81,79 @@ imgcli generate [options]
 
   -p, --provider <provider>   openai or gemini
   --prompt <prompt>           prompt for the image
-  -o, --out <path>            output directory or .png file
-  -n, --count <number>        number of images (default: 1)
+  -o, --out <path>            output directory or .png/.jpg/.jpeg/.webp file
+  -n, --count <number>        integer from 1 to 10 (default: 1)
   --size <size>               size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)
   --aspect <ratio>            aspect ratio like 1:1, 4:3, 16:9 (Gemini)
-  --model <model>             model override (default is latest for provider)
+  --model <model>             explicit model override
+  --background <mode>         OpenAI: auto, opaque, transparent
+  --format <format>           OpenAI: png, jpeg, webp
+  --quality <quality>         OpenAI: auto, low, medium, high, xhigh, max
+  --base-url <url>            Gemini gateway URL
   --non-interactive           fail if required inputs are missing (CI mode)
 ```
 
 ## CI / non-interactive
 
-- Requires `--provider` and `--prompt`.
+- Requires `--prompt`; `--provider` can be omitted if exactly one provider has a stored key.
 - API key must already be stored via `imgcli login`.
 
 ## Models
 
-The CLI prompts you to select a model when running interactively. Defaults to the latest model for the chosen provider.
-Use `--model` to override.
+The choices below were checked against the official API documentation on 23 October 2026.
+An explicit `--model` wins over a saved `providers.<provider>.model` preference;
+otherwise the provider default applies. Existing keys, saved model preferences
+and gateway URLs are not rewritten by generation. Custom model IDs and gateway
+aliases remain available through `--model`.
 
 OpenAI:
 
-- gpt-image-1 (latest)
-- dall-e-3
+- `gpt-image-2.5-sunburst` (default)
+- `gpt-image-2.5-flare`
+- `gpt-image-2.5-sunburst-2026-09-08`, `gpt-image-2.5-flare-2026-09-08` (snapshots)
+- `gpt-image-2`, `gpt-image-2-2026-04-21` (snapshot)
+- `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`
+- `chatgpt-image-latest` (rolling alias)
+
+DALL-E models are retired and no longer appear in the menu. Model access still
+depends on the provider account. See the [OpenAI image API reference](https://developers.openai.com/api/reference/resources/images/methods/generate).
 
 Gemini:
 
-- gemini-3-pro-image-preview (latest)
-- gemini-2.5-flash-image
-- imagen-3.0-generate-001 (legacy)
+- `gemini-nano-banana-2.1` (default)
+- `gemini-3.1-flash-image`
+- `gemini-3.1-flash-lite-image`
+- `gemini-3-pro-image`
+- `gemini-2.5-flash-image`
+
+The current stable image models replace the old preview/Imagen menu entries.
+The CLI keeps the existing `generateContent` endpoint, which supports these
+models; direct calls and gateways receive the selected aspect ratio.
+See Google's [model guide](https://ai.google.dev/gemini-api/docs/image-generation)
+and [generateContent image guide](https://ai.google.dev/gemini-api/docs/generate-content/image-generation).
+
+## Transparent backgrounds and output formats
+
+```bash
+imgcli generate --non-interactive --provider openai \
+  --model gpt-image-2.5-sunburst --background transparent --format png \
+  --size 1536x1024 --quality high \
+  --prompt "A small clay tree, isolated with real transparent alpha pixels" \
+  --out tree.png
+```
+
+`--background transparent` sends an explicit API parameter; mentioning
+transparency only in the prompt is insufficient. PNG and WebP support alpha.
+JPEG with transparency is rejected before generation. The format defaults to
+the filename extension, or PNG for a directory. An explicit format must match
+the filename extension; `.jpg` and `.jpeg` both select JPEG. Multiple images
+use numbered filenames. Directory outputs use the requested format extension.
+
+OpenAI defaults to `1024x1024`. Standard sizes include `1536x1024` and
+`1024x1536`; newer models also accept other supported sizes. The API validates
+model-specific dimensions. `xhigh` and `max` quality are supported by Sunburst
+and Flare, including their snapshots. Gemini uses its native PNG response;
+explicit background, quality and non-PNG output requests require OpenAI.
 
 ## Proxy / gateway support
 
@@ -132,7 +177,8 @@ model travels in the request body and the token is sent as a bearer token.
 ## Configuration
 
 API keys are stored in `~/.imgcli/config.json` (plaintext), alongside the
-optional `baseUrl` for each provider.
+optional `baseUrl` and `model` for each provider. Generation does not modify
+this file. Keep it private; do not commit it.
 
 ## Notes
 
@@ -143,5 +189,11 @@ optional `baseUrl` for each provider.
 
 ```bash
 npm install
+npm test
+npm run check
 node bin/imgcli.js
 ```
+
+Tests mock provider HTTP responses and exercise CLI argument handling with
+temporary fixture configuration. They make no paid API requests and do not
+read your real credentials.

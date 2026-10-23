@@ -4,22 +4,13 @@ import inquirer from "inquirer";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
-import crypto from "crypto";
+import { latestModel, modelChoices, inferAspectRatio, validateOptions, openaiGenerate, geminiGenerate, writeOutputs } from "../lib/images.js";
 import { createRequire } from "module";
 
 const CONFIG_DIR = path.join(os.homedir(), ".imgcli");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");
-const OPENAI_MODELS = [
-  { id: "gpt-image-1", label: "gpt-image-1 (latest)" },
-  { id: "dall-e-3", label: "dall-e-3" }
-];
-const GEMINI_MODELS = [
-  { id: "gemini-3-pro-image-preview", label: "gemini-3-pro-image-preview (latest)" },
-  { id: "gemini-2.5-flash-image", label: "gemini-2.5-flash-image" },
-  { id: "imagen-3.0-generate-001", label: "imagen-3.0-generate-001 (legacy)" }
-];
 
 async function loadConfig() {
   try {
@@ -36,41 +27,10 @@ async function saveConfig(config) {
 }
 
 function ensureProvider(config, provider) {
+  config.providers ||= {};
   if (!config.providers[provider]) {
     config.providers[provider] = {};
   }
-}
-
-function nowStamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
-}
-
-function randomSlug() {
-  return crypto.randomBytes(4).toString("hex");
-}
-
-function inferAspectRatio(size) {
-  if (!size) return undefined;
-  const match = /^([0-9]+)x([0-9]+)$/i.exec(size);
-  if (!match) return undefined;
-  const w = Number(match[1]);
-  const h = Number(match[2]);
-  if (!w || !h) return undefined;
-  const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
-  const g = gcd(w, h);
-  return `${w / g}:${h / g}`;
-}
-
-function latestModel(provider) {
-  if (provider === "openai") return OPENAI_MODELS[0].id;
-  if (provider === "gemini") return GEMINI_MODELS[0].id;
-  return undefined;
-}
-
-function modelChoices(provider) {
-  if (provider === "openai") return OPENAI_MODELS.map((m) => ({ name: m.label, value: m.id }));
-  if (provider === "gemini") return GEMINI_MODELS.map((m) => ({ name: m.label, value: m.id }));
-  return [];
 }
 
 function startLoadingBox(label = "Generating") {
@@ -94,30 +54,6 @@ function startLoadingBox(label = "Generating") {
   };
 }
 
-async function writeOutputs(buffers, outPath, provider) {
-  const outIsFile = outPath && outPath.endsWith(".png");
-  const dir = outIsFile ? path.dirname(outPath) : (outPath || "out");
-  await fs.mkdir(dir, { recursive: true });
-
-  const outputs = [];
-  for (let i = 0; i < buffers.length; i += 1) {
-    let filePath;
-    if (outIsFile) {
-      const base = path.basename(outPath, ".png");
-      const name = buffers.length === 1 ? `${base}.png` : `${base}-${i + 1}.png`;
-      filePath = path.join(dir, name);
-    } else {
-      filePath = path.join(
-        dir,
-        `${provider}-${nowStamp()}-${i + 1}-${randomSlug()}.png`
-      );
-    }
-    await fs.writeFile(filePath, buffers[i]);
-    outputs.push(filePath);
-  }
-  return outputs;
-}
-
 async function promptIfMissing(options) {
   const questions = [];
   if (!options.provider) {
@@ -139,158 +75,6 @@ async function promptIfMissing(options) {
     });
   }
   return questions.length ? inquirer.prompt(questions) : {};
-}
-
-async function openaiGenerate({ apiKey, prompt, size, n, model }) {
-  const res = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      prompt,
-      size,
-      n
-    })
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`OpenAI API error (${res.status}): ${text}`);
-  }
-
-  const data = await res.json();
-  const images = data.data || [];
-  if (!images.length) {
-    throw new Error("OpenAI API returned no images");
-  }
-
-  const buffers = [];
-  for (const img of images) {
-    if (img.b64_json) {
-      buffers.push(Buffer.from(img.b64_json, "base64"));
-      continue;
-    }
-    if (img.url) {
-      const imageRes = await fetch(img.url);
-      if (!imageRes.ok) {
-        const text = await imageRes.text();
-        throw new Error(`Failed to fetch OpenAI image (${imageRes.status}): ${text}`);
-      }
-      const arrayBuffer = await imageRes.arrayBuffer();
-      buffers.push(Buffer.from(arrayBuffer));
-      continue;
-    }
-    throw new Error("OpenAI API returned an unsupported image format");
-  }
-
-  return buffers;
-}
-
-// Gateways such as Ledger expose one Gemini endpoint, take the model in the
-// request body and authenticate with a bearer token rather than an API key.
-async function proxyGeminiGenerate({ apiKey, prompt, n, model, baseUrl }) {
-  const url = `${baseUrl.replace(/\/+$/, "")}/v1/gemini/generateContent`;
-  const buffers = [];
-
-  for (let i = 0; i < n; i += 1) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        contents: [{ role: "user", parts: [{ text: prompt }] }]
-      })
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Proxy error (${res.status}): ${text}`);
-    }
-
-    const data = await res.json();
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    const images = parts.filter((part) => part.inlineData?.data).map((part) => part.inlineData.data);
-    if (!images.length) {
-      throw new Error("Proxy returned no images");
-    }
-    images.forEach((img) => buffers.push(Buffer.from(img, "base64")));
-  }
-
-  return buffers;
-}
-
-async function geminiGenerate({ apiKey, prompt, aspectRatio, n, model, baseUrl }) {
-  if (baseUrl) {
-    return proxyGeminiGenerate({ apiKey, prompt, n, model, baseUrl });
-  }
-
-  if (model.startsWith("imagen-")) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:predict?key=${apiKey}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        instances: [{ prompt }],
-        parameters: {
-          sampleCount: n,
-          ...(aspectRatio ? { aspectRatio } : {})
-        }
-      })
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Gemini API error (${res.status}): ${text}`);
-    }
-
-    const data = await res.json();
-    const predictions = data.predictions || [];
-    if (!predictions.length) {
-      throw new Error("Gemini API returned no images");
-    }
-
-    return predictions.map((img) => Buffer.from(img.bytesBase64Encoded, "base64"));
-  }
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const buffers = [];
-  for (let i = 0; i < n; i += 1) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [{ text: prompt }]
-          }
-        ]
-      })
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Gemini API error (${res.status}): ${text}`);
-    }
-
-    const data = await res.json();
-    const parts = data.candidates?.[0]?.content?.parts || [];
-    const images = parts.filter((part) => part.inlineData?.data).map((part) => part.inlineData.data);
-    if (!images.length) {
-      throw new Error("Gemini API returned no images");
-    }
-    images.forEach((img) => buffers.push(Buffer.from(img, "base64")));
-  }
-
-  return buffers;
 }
 
 const program = new Command();
@@ -383,11 +167,14 @@ program
   .description("Generate images")
   .option("-p, --provider <provider>", "openai or gemini")
   .option("--prompt <prompt>", "prompt for the image")
-  .option("-o, --out <path>", "output directory or .png file")
+  .option("-o, --out <path>", "output directory or .png/.jpg/.jpeg/.webp file")
   .option("-n, --count <number>", "number of images", (v) => Number(v), 1)
   .option("--size <size>", "size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)")
   .option("--aspect <ratio>", "aspect ratio like 1:1, 4:3, 16:9 (Gemini)")
-  .option("--model <model>", "model override (default is latest for provider)")
+  .option("--model <model>", "model override (saved preference or current provider default)")
+  .option("--background <mode>", "OpenAI background: auto, opaque, transparent")
+  .option("--format <format>", "OpenAI encoding: png, jpeg, webp (default: inferred from filename or png)")
+  .option("--quality <quality>", "OpenAI quality: auto, low, medium, high, xhigh, max")
   .option("--base-url <url>", "route Gemini calls through a proxy such as Ledger")
   .option("--non-interactive", "fail if required inputs are missing (CI mode)")
   .action(async (options) => {
@@ -401,9 +188,9 @@ program
     const provider =
       (options.provider || answers.provider || (storedProviders.length === 1 ? storedProviders[0] : "openai"))
         .toLowerCase();
-    let model = options.model;
+    let model = options.model || config.providers?.[provider]?.model;
     const prompt = options.prompt || answers.prompt;
-    const n = Number.isFinite(options.count) && options.count > 0 ? options.count : 1;
+    const n = options.count;
 
     if (nonInteractive) {
       if (!options.provider && storedProviders.length !== 1) {
@@ -421,7 +208,7 @@ program
       process.exit(1);
     }
 
-    const apiKey = config.providers[provider]?.apiKey;
+    const apiKey = config.providers?.[provider]?.apiKey;
     if (!apiKey) {
       console.error(`No API key found for ${provider}. Run 'imgcli login'.`);
       process.exit(1);
@@ -433,8 +220,8 @@ program
           type: "list",
           name: "model",
           message: "Select a model",
-          choices: modelChoices(provider),
-          default: latestModel(provider)
+          choices: modelChoices(provider, config.providers[provider]?.model),
+          default: config.providers[provider]?.model || latestModel(provider)
         }
       ]);
       model = modelAnswer.model;
@@ -444,11 +231,12 @@ program
 
     let stopLoading;
     try {
+      const generation = validateOptions({ ...options, provider, model, count: n });
       stopLoading = startLoadingBox();
       let buffers;
       if (provider === "openai") {
         const size = options.size || "1024x1024";
-        buffers = await openaiGenerate({ apiKey, prompt, size, n, model });
+        buffers = await openaiGenerate({ apiKey, prompt, size, n, model, ...generation });
       } else if (provider === "gemini") {
         const aspectRatio = options.aspect || inferAspectRatio(options.size) || "1:1";
         const baseUrl = options.baseUrl || config.providers[provider]?.baseUrl;
@@ -459,7 +247,7 @@ program
       }
 
       stopLoading();
-      const outputs = await writeOutputs(buffers, options.out, provider);
+      const outputs = await writeOutputs(buffers, options.out, provider, generation.format);
       outputs.forEach((file) => console.log(`Saved ${file}`));
     } catch (err) {
       stopLoading?.();
@@ -522,8 +310,8 @@ program
         type: "list",
         name: "model",
         message: "Select a model",
-        choices: (answers) => modelChoices(answers.provider || preselectedProvider),
-        default: (answers) => latestModel(answers.provider || preselectedProvider)
+        choices: (answers) => modelChoices(answers.provider || preselectedProvider, config.providers[answers.provider || preselectedProvider]?.model),
+        default: (answers) => config.providers[answers.provider || preselectedProvider]?.model || latestModel(answers.provider || preselectedProvider)
       },
       {
         type: "number",
@@ -535,25 +323,39 @@ program
         type: "input",
         name: "size",
         message: "Size (e.g. 1024x1024) or leave blank",
-        when: (answers) => answers.provider === "openai"
+        when: (answers) => (answers.provider || preselectedProvider) === "openai"
       },
       {
         type: "input",
         name: "aspect",
         message: "Aspect ratio (e.g. 1:1, 16:9) or leave blank",
-        when: (answers) => answers.provider === "gemini"
+        when: (answers) => (answers.provider || preselectedProvider) === "gemini"
+      },
+      {
+        type: "list",
+        name: "background",
+        message: "Background",
+        choices: ["auto", "opaque", "transparent"],
+        when: (answers) => (answers.provider || preselectedProvider) === "openai"
+      },
+      {
+        type: "list",
+        name: "format",
+        message: "Image format",
+        choices: (answers) => answers.background === "transparent" ? ["png", "webp"] : ["png", "jpeg", "webp"],
+        when: (answers) => (answers.provider || preselectedProvider) === "openai"
       },
       {
         type: "input",
         name: "out",
-        message: "Output directory or .png filename",
+        message: "Output directory or .png/.jpg/.jpeg/.webp filename",
         default: "out"
       }
     ]);
 
     const provider = preselectedProvider || answers.provider;
     const prompt = answers.prompt;
-    const n = Number.isFinite(answers.count) && answers.count > 0 ? answers.count : 1;
+    const n = answers.count;
     const out = answers.out;
     const model = answers.model || latestModel(provider);
 
@@ -565,18 +367,19 @@ program
 
     let stopLoading;
     try {
+      const generation = validateOptions({ ...answers, provider, model, count: n });
       stopLoading = startLoadingBox();
       let buffers;
       if (provider === "openai") {
         const size = answers.size || "1024x1024";
-        buffers = await openaiGenerate({ apiKey, prompt, size, n, model });
+        buffers = await openaiGenerate({ apiKey, prompt, size, n, model, ...generation });
       } else {
         const aspectRatio = answers.aspect || "1:1";
-        buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model });
+        buffers = await geminiGenerate({ apiKey, prompt, aspectRatio, n, model, baseUrl: config.providers[provider]?.baseUrl });
       }
 
       stopLoading();
-      const outputs = await writeOutputs(buffers, out, provider);
+      const outputs = await writeOutputs(buffers, out, provider, generation.format);
       outputs.forEach((file) => console.log(`Saved ${file}`));
     } catch (err) {
       stopLoading?.();
@@ -585,4 +388,4 @@ program
     }
   });
 
-program.parse();
+program.parseAsync();
