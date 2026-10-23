@@ -1,6 +1,6 @@
 {
   "name": "imgcli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI to generate images with OpenAI or Gemini",
   "license": "MIT",
   "repository": {
@@ -24,7 +24,8 @@
     "imgcli": "bin/imgcli.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "lib"
   ],
   "engines": {
     "node": ">=18"
@@ -32,5 +33,9 @@
   "dependencies": {
     "commander": "^12.1.0",
     "inquirer": "^9.2.20"
+  },
+  "scripts": {
+    "test": "node --test test/images.test.js",
+    "check": "node --check bin/imgcli.js && node --check lib/images.js"
   }
 }
