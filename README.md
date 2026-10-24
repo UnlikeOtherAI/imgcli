@@ -199,3 +199,11 @@ node bin/imgcli.js
 Tests mock provider HTTP responses and exercise CLI argument handling with
 temporary fixture configuration. They make no paid API requests and do not
 read your real credentials.
+
+## Reference-based edits
+
+Pass one or more local images with `--image`. This uses the OpenAI image edit endpoint and preserves explicit model, quality and alpha options. Gemini reference editing is not supported.
+
+```sh
+imgcli generate --provider openai --model gpt-image-2.5-sunburst --image ./button.png --prompt "Re-render the same button with smooth edges and real alpha transparency." --background transparent --format png --quality high --out ./smooth-button.png --non-interactive
+```

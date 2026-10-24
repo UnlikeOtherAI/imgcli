@@ -124,3 +124,55 @@ test("actual CLI uses saved preference, explicit override and leaves configurati
   assert.equal(result.status, 1);
   assert.match(result.stderr, /extension/);
 });
+
+
+test("OpenAI reference editing sends actual file bytes with explicit transparent output", async (t) => {
+  await fs.mkdir(scratch, { recursive: true });
+  const target = await fs.mkdtemp(path.join(scratch, "references-"));
+  const refs = [path.join(target, "button.png"), path.join(target, "style.webp")];
+  for (const filename of refs) await fs.writeFile(filename, image);
+  let received;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    received = {url, ...init};
+    return Response.json({data:[{b64_json:encoded}]});
+  });
+  const buffers = await openaiGenerate({apiKey:"fixture-key",prompt:"smooth button",size:"1024x1024",n:1,model:"gpt-image-2.5-sunburst",background:"transparent",format:"png",quality:"high",images:refs});
+  assert.equal(received.url,"https://api.openai.com/v1/images/edits");
+  assert.equal(received.headers["Content-Type"],undefined);
+  assert.equal(received.body.get("model"),"gpt-image-2.5-sunburst");
+  assert.equal(received.body.get("background"),"transparent");
+  assert.equal(received.body.get("output_format"),"png");
+  assert.equal(received.body.get("quality"),"high");
+  const files=received.body.getAll("image[]");
+  assert.equal(files.length,2);
+  assert.equal(files[0].name,"button.png");
+  assert.equal(files[1].type,"image/webp");
+  assert.deepEqual(Buffer.from(await files[0].arrayBuffer()),image);
+  assert.deepEqual(buffers,[image]);
+});
+
+test("invalid references fail before a network request", async (t) => {
+  const fetch=t.mock.method(globalThis,"fetch",async()=>{throw Error("Unexpected request")});
+  assert.throws(()=>validateOptions({...basic,image:Array(17).fill("button.png")}),/At most 16/);
+  assert.throws(()=>validateOptions({...basic,provider:"gemini",image:["button.png"]}),/require OpenAI/);
+  await assert.rejects(openaiGenerate({images:["bad.svg"]}),/PNG, JPEG or WebP/);
+  await assert.rejects(openaiGenerate({images:[path.join(scratch,"missing.png")]}),/ENOENT/);
+  assert.equal(fetch.mock.callCount(),0);
+});
+
+test("actual CLI forwards reference flags without exposing or changing stored credentials", async () => {
+  await fs.mkdir(scratch,{recursive:true});
+  const dir=await fs.mkdtemp(path.join(scratch,"reference-cli-"));
+  await fs.mkdir(path.join(dir,".imgcli"));
+  const config=JSON.stringify({providers:{openai:{apiKey:"fixture-key"}}});
+  await fs.writeFile(path.join(dir,".imgcli/config.json"),config);
+  const ref=path.join(dir,"button.png");await fs.writeFile(ref,image);
+  const request=path.join(dir,"request.json"),hook=path.join(dir,"fetch.mjs");
+  await fs.writeFile(hook,'import fs from "node:fs"; globalThis.fetch=async(url,init)=>{fs.writeFileSync(process.env.REQUEST_PATH,JSON.stringify({url,referenceCount:init.body.getAll("image[]").length,background:init.body.get("background")}));return Response.json({data:[{b64_json:"'+encoded+'"}]});};');
+  const args=["--import",pathToFileURL(hook).href,"bin/imgcli.js","generate","--non-interactive","--provider","openai","--model","gpt-image-2.5-sunburst","--image",ref,"--prompt","same smooth button","--background","transparent","--out",path.join(dir,"result.png")];
+  const result=spawnSync(process.execPath,args,{cwd:root,env:{...process.env,HOME:dir,USERPROFILE:dir,REQUEST_PATH:request},encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(JSON.parse(await fs.readFile(request)),{url:"https://api.openai.com/v1/images/edits",referenceCount:1,background:"transparent"});
+  assert.equal(await fs.readFile(path.join(dir,".imgcli/config.json"),"utf8"),config);
+  assert(!result.stdout.includes("fixture-key"));
+});
