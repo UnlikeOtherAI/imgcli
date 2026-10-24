@@ -172,6 +172,7 @@ program
   .option("--size <size>", "size like 1024x1024 (OpenAI) or aspect ratio inference (Gemini)")
   .option("--aspect <ratio>", "aspect ratio like 1:1, 4:3, 16:9 (Gemini)")
   .option("--model <model>", "model override (saved preference or current provider default)")
+  .option("--image <paths...>", "reference PNG, JPEG or WebP images for OpenAI editing (up to 16)")
   .option("--background <mode>", "OpenAI background: auto, opaque, transparent")
   .option("--format <format>", "OpenAI encoding: png, jpeg, webp (default: inferred from filename or png)")
   .option("--quality <quality>", "OpenAI quality: auto, low, medium, high, xhigh, max")
